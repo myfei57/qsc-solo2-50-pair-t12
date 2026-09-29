@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from ..app import CycleInputs, Platform
 from ..errors import RubberCureError
+from ..store.journal import Cursor
 
 MAX_TREND_WINDOW_S = 86_400.0
 MAX_AUDIT_LIMIT = 500
@@ -61,12 +62,30 @@ class ConsoleAPI:
             "recent": self.platform.audit.tail(bounded // 4 + 1),
         }
 
-    def journal(self, segment: int | None = None, limit: int = 200) -> dict:
-        """读落盘日志；给段号时只读该段。"""
+    def journal(
+        self,
+        segment: int | None = None,
+        limit: int = 200,
+        after: dict | None = None,
+    ) -> dict:
+        """读落盘日志。
 
-        if segment is None:
+        给段号时只读该段；否则从游标 ``after``（``{"segment","line"}``，
+        缺省为日志起点）续读，返回本批记录、下次游标与坏段标记。
+        """
+
+        if segment is not None:
+            return {"segment": segment, "entries": self.platform.audit.replay_segment(segment)}
+        if after is None:
             return {"segment": None, "entries": self.platform.audit.replay_from_journal(limit)}
-        return {"segment": segment, "entries": self.platform.audit.replay_segment(segment)}
+        cursor = Cursor.from_dict(after)
+        result = self.platform.audit.replay_after(cursor, limit=limit)
+        return {
+            "segment": None,
+            "entries": result.records,
+            "next_cursor": result.cursor.to_dict(),
+            "bad_segments": [bad.as_dict() for bad in result.bad_segments],
+        }
 
     def readiness(self) -> dict:
         """投产前体检：把机群与模具的关键前置条件摊开给控制台。"""

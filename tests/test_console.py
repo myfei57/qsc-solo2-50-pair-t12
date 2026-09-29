@@ -9,6 +9,7 @@ import urllib.request
 from rubbercure.console.api import ConsoleAPI
 from rubbercure.console.pages import PAGE_TITLES, render_page
 from rubbercure.console.server import ConsoleServer, probe_pages
+from rubbercure.errors import StorageError
 
 
 def _request(url: str, method: str = "GET", payload: dict | None = None):
@@ -100,6 +101,37 @@ def test_console_api_actions_cover_maintenance(platform):
     retired = platform.retire_mold("api-mold", "控制台报废")
     assert retired["status"] == "retired"
     assert platform.scheduler.queue.entries() == []
+
+
+def test_console_journal_resumes_from_cursor(platform):
+    api = ConsoleAPI(platform)
+    from rubbercure.audit.record import AuditRecord
+
+    for seq in range(5):
+        platform.audit.record(
+            AuditRecord.create(platform.clock.now(), "test", "probe", "cursor", seq=seq)
+        )
+
+    first = api.journal(limit=2, after={"segment": -1, "line": 0})
+    assert [entry["detail"]["seq"] for entry in first["entries"]] == [0, 1]
+    assert first["bad_segments"] == []
+
+    second = api.journal(limit=2, after=first["next_cursor"])
+    assert [entry["detail"]["seq"] for entry in second["entries"]] == [2, 3]
+
+    third = api.journal(after=second["next_cursor"])
+    assert [entry["detail"]["seq"] for entry in third["entries"]] == [4]
+
+    again = api.journal(after=third["next_cursor"])
+    assert again["entries"] == []
+    assert again["next_cursor"] == third["next_cursor"]
+
+    try:
+        api.journal(after={"segment": -2, "line": 0})
+    except StorageError:
+        pass
+    else:  # pragma: no cover - 未抛错即失败
+        raise AssertionError("非法游标必须报错")
 
 
 def test_render_page_rejects_unknown_page(platform):

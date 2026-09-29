@@ -10,7 +10,7 @@ import threading
 
 from ..clock import Clock
 from ..eventbus import Event, EventBus
-from ..store.journal import JsonlJournal
+from ..store.journal import Cursor, JsonlJournal, ReadResult
 from .record import SEVERITY_ORDER, AuditRecord
 
 _MEMORY_LIMIT = 2000
@@ -78,10 +78,18 @@ class AuditLog:
         return [record.as_dict() for record in records]
 
     def replay_from_journal(self, limit: int = 200) -> list[dict]:
-        """从落盘日志回放整段历史（跨段拼接），供控制台对照内存视图。"""
+        """从落盘日志回放整段历史（跨段拼接），供控制台对照内存视图。
+
+        坏段自动跳过，其余段照常读出。
+        """
 
         records = self._journal.read_all()
         return records[-limit:]
+
+    def replay_after(self, cursor: Cursor | None, limit: int | None = None) -> ReadResult:
+        """从上次游标续读落盘历史，坏段标记在结果里、其余段照常读。"""
+
+        return self._journal.read_after(cursor, limit=limit)
 
     def replay_segment(self, index: int) -> list[dict]:
         """读取指定落盘段。"""

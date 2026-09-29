@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from ..app import Platform
+from ..errors import RubberCureError
 from .api import ConsoleAPI
 from .pages import PAGE_TITLES, render_page
 
@@ -81,7 +82,14 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
                 raw_segment = (query.get("segment") or [None])[0]
                 segment = int(raw_segment) if raw_segment is not None else None
                 limit = int((query.get("limit") or ["200"])[0])
-                self._send_json(self.api.journal(segment=segment, limit=limit))
+                if "after_segment" in query:
+                    after = {
+                        "segment": int(query["after_segment"][0]),
+                        "line": int((query.get("after_line") or ["0"])[0]),
+                    }
+                else:
+                    after = None
+                self._send_json(self.api.journal(segment=segment, limit=limit, after=after))
             elif parsed.path == "/api/readiness":
                 self._send_json(self.api.readiness())
             elif parsed.path == "/":
@@ -92,6 +100,8 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "not-found", "path": parsed.path}, status=404)
         except (ValueError, KeyError) as error:
             self._send_json({"error": str(error)}, status=400)
+        except RubberCureError as error:
+            self._send_json({"error": error.message, "type": type(error).__name__}, status=400)
 
     def do_POST(self) -> None:  # noqa: N802 - http.server 回调命名
         parsed = urlparse(self.path)
