@@ -10,7 +10,7 @@ import threading
 
 from ..clock import Clock
 from ..eventbus import Event, EventBus
-from ..store.journal import JsonlJournal
+from ..store.journal import JournalCursor, JournalReadResult, JsonlJournal
 from .record import SEVERITY_ORDER, AuditRecord
 
 _MEMORY_LIMIT = 2000
@@ -61,13 +61,18 @@ class AuditLog:
         with self._lock:
             counters = dict(self._counters)
             total = len(self._records)
+        corruptions = self._journal.corrupt_segments()
         return {
             "total": total,
             "by_severity": {
                 name: counters.get(name, 0)
-                for name in sorted(SEVERITY_ORDER, key=lambda item: SEVERITY_ORDER[item])
+                for name in sorted(
+                    SEVERITY_ORDER,
+                    key=lambda item: SEVERITY_ORDER[item],
+                )
             },
             "segments": self._journal.segment_count(),
+            "corrupt_segments": [item.as_dict() for item in corruptions],
         }
 
     def tail(self, count: int = 20) -> list[dict]:
@@ -82,6 +87,27 @@ class AuditLog:
 
         records = self._journal.read_all()
         return records[-limit:]
+
+    def replay_after(
+        self,
+        cursor: JournalCursor | dict | None = None,
+        limit: int = 200,
+    ) -> JournalReadResult:
+        """从游标处续读落盘日志，并返回下一次读取应提交的游标。"""
+
+        if isinstance(cursor, dict):
+            cursor = JournalCursor.from_mapping(cursor)
+        return self._journal.read_after(cursor, limit=limit)
+
+    def replay_resuming(
+        self,
+        consumer: str,
+        limit: int = 200,
+        commit: bool = False,
+    ) -> JournalReadResult:
+        """按读取方名称找到上次位置续读。"""
+
+        return self._journal.read_resuming(consumer, limit=limit, commit=commit)
 
     def replay_segment(self, index: int) -> list[dict]:
         """读取指定落盘段。"""

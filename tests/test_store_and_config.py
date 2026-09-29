@@ -15,7 +15,7 @@ from rubbercure.config import (
     load_config,
 )
 from rubbercure.errors import ConfigError, StorageError
-from rubbercure.store.journal import JsonlJournal
+from rubbercure.store.journal import JournalCursor, JsonlJournal
 from rubbercure.store.jsonfile import JsonStore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +51,74 @@ def test_journal_rolls_segments_and_reads_in_order(tmp_path):
     assert [record["seq"] for record in records] == [0, 1, 2, 3, 4]
     assert len(journal.read_segment(0)) == 2
     assert journal.read_segment(99) == []
+
+
+def test_journal_reads_after_cursor_and_skips_corrupt_segment(tmp_path):
+    journal = JsonlJournal(str(tmp_path / "state"), "audit", segment_limit=2)
+    for index in range(6):
+        journal.append({"seq": index})
+
+    first = journal.read_after(JournalCursor(), limit=2)
+    assert [record["seq"] for record in first.records] == [0, 1]
+    assert first.next_cursor == JournalCursor(0, 2)
+
+    corrupt_path = tmp_path / "state" / "audit" / "00001.jsonl"
+    corrupt_path.write_text('{"seq": 2}\n{broken\n', encoding="utf-8")
+    second = journal.read_after(first.next_cursor, limit=10)
+    assert [record["seq"] for record in second.records] == [4, 5]
+    assert second.next_cursor == JournalCursor(2, 2)
+    assert len(second.corruptions) == 1
+    assert second.corruptions[0].segment == 1
+    assert second.corruptions[0].line == 1
+    assert os.path.isfile(tmp_path / "state" / "audit" / "00001.jsonl.corrupt")
+
+    resumed = journal.read_after(first.next_cursor, limit=10)
+    assert [record["seq"] for record in resumed.records] == [4, 5]
+    assert [item.segment for item in resumed.corruptions] == [1]
+
+
+def test_journal_continues_when_middle_segment_corrupt(tmp_path):
+    journal = JsonlJournal(str(tmp_path / "state"), "audit", segment_limit=2)
+    for index in range(6):
+        journal.append({"seq": index})
+    corrupt_segment = tmp_path / "state" / "audit" / "00001.jsonl"
+    corrupt_segment.write_text("{broken\n", encoding="utf-8")
+
+    result = journal.read_all()
+    assert [record["seq"] for record in result] == [0, 1, 4, 5]
+
+    scan = journal.read_after()
+    assert [item.segment for item in scan.corruptions] == [1]
+    assert scan.corruptions[0].error
+    assert scan.records == result
+
+
+def test_journal_read_batch_advances_only_committed_cursor(tmp_path):
+    journal = JsonlJournal(str(tmp_path / "state"), "audit", segment_limit=10)
+    for index in range(3):
+        journal.append({"seq": index})
+
+    batch = journal.read_after(limit=2)
+    assert [record["seq"] for record in batch.records] == [0, 1]
+    same = journal.read_after(batch.next_cursor, limit=2)
+    assert [record["seq"] for record in same.records] == [2]
+    assert same.next_cursor == JournalCursor(0, 3)
+    assert journal.read_after(same.next_cursor).records == []
+
+
+def test_journal_persists_consumer_cursor_for_resume(tmp_path):
+    journal = JsonlJournal(str(tmp_path / "state"), "audit", segment_limit=10)
+    for index in range(4):
+        journal.append({"seq": index})
+
+    first = journal.read_resuming("replayer", limit=2)
+    assert [record["seq"] for record in first.records] == [0, 1]
+    journal.save_cursor("replayer", first.next_cursor)
+
+    reloaded = JsonlJournal(str(tmp_path / "state"), "audit", segment_limit=10)
+    second = reloaded.read_resuming("replayer", limit=2, commit=True)
+    assert [record["seq"] for record in second.records] == [2, 3]
+    assert reloaded.read_resuming("replayer", limit=2, commit=True).records == []
 
 
 def test_journal_rejects_non_positive_segment_limit(tmp_path):

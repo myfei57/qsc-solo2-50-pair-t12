@@ -80,8 +80,23 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/journal":
                 raw_segment = (query.get("segment") or [None])[0]
                 segment = int(raw_segment) if raw_segment is not None else None
+                raw_after = (query.get("after") or [None])[0]
+                after = json.loads(raw_after) if raw_after is not None else None
+                if after is not None and not isinstance(after, dict):
+                    raise ValueError("after 必须是 JSON 对象")
+                consumer = (query.get("consumer") or [None])[0]
+                commit_value = (query.get("commit") or ["false"])[0].lower()
+                commit = commit_value in {"1", "true", "yes"}
                 limit = int((query.get("limit") or ["200"])[0])
-                self._send_json(self.api.journal(segment=segment, limit=limit))
+                self._send_json(
+                    self.api.journal(
+                        segment=segment,
+                        limit=limit,
+                        after=after,
+                        consumer=consumer,
+                        commit=commit,
+                    )
+                )
             elif parsed.path == "/api/readiness":
                 self._send_json(self.api.readiness())
             elif parsed.path == "/":

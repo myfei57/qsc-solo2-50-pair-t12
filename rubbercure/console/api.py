@@ -61,12 +61,33 @@ class ConsoleAPI:
             "recent": self.platform.audit.tail(bounded // 4 + 1),
         }
 
-    def journal(self, segment: int | None = None, limit: int = 200) -> dict:
-        """读落盘日志；给段号时只读该段。"""
+    def journal(
+        self,
+        segment: int | None = None,
+        limit: int = 200,
+        after: dict | None = None,
+        consumer: str | None = None,
+        commit: bool = False,
+    ) -> dict:
+        """读落盘日志；给段号时只读该段，给游标或读取方名称时续读。"""
 
-        if segment is None:
-            return {"segment": None, "entries": self.platform.audit.replay_from_journal(limit)}
-        return {"segment": segment, "entries": self.platform.audit.replay_segment(segment)}
+        if segment is not None:
+            entries = self.platform.audit.replay_segment(segment)
+            return {"segment": segment, "entries": entries}
+        if consumer is not None:
+            result = self.platform.audit.replay_resuming(
+                consumer,
+                limit=limit,
+                commit=commit,
+            )
+            return {"segment": None, **result.as_dict()}
+        if after is not None:
+            if not isinstance(after, dict):
+                raise ValueError("after 必须是 JSON 对象")
+            result = self.platform.audit.replay_after(after, limit=limit)
+            return {"segment": None, **result.as_dict()}
+        entries = self.platform.audit.replay_from_journal(limit)
+        return {"segment": None, "entries": entries}
 
     def readiness(self) -> dict:
         """投产前体检：把机群与模具的关键前置条件摊开给控制台。"""
